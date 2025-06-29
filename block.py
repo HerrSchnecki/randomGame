@@ -30,9 +30,18 @@ class Block(Button):
     def input(self, key):
         if self.hovered:
             if key == 'right mouse down':
-                BlockRegistry.create(current_block, position=self.position + mouse.normal)
+                try:
+                    from inventory import get_current_block
+                    current_block = get_current_block()
+                    if current_block:
+                        BlockRegistry.create(current_block, position=self.position + mouse.normal)
+                except ImportError:
+                    current_block = 'grass'
+                    BlockRegistry.create(current_block, position=self.position + mouse.normal)
+            
             if key == 'left mouse down':
                 destroy(self)
 
 
+# Globale Variable für Rückwärtskompatibilität
 current_block = 'grass'
