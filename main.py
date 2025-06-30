@@ -9,7 +9,8 @@ from inventory import create_inventory, handle_inventory_input, get_current_bloc
 app = Ursina()
 
 window.fps_counter.enabled = True
-window.exit_button.visible = False
+window.exit_button.visible = True
+window.title = 'HyMine'
 mouse.locked = True
 
 player = FirstPersonController()
@@ -22,18 +23,20 @@ BlockRegistry.register('dirt', 'assets/textures/blocks/dirt')
 BlockRegistry.register('wood', 'assets/textures/blocks/wood')
 BlockRegistry.register('sand', 'assets/textures/blocks/sand')
 BlockRegistry.register('water', 'assets/textures/blocks/water')
-BlockRegistry.register('leaves', 'assets/textures/blocks/leaves')
+BlockRegistry.register('test', 'assets/textures/blocks/test')
 BlockRegistry.register('cobblestone', 'assets/textures/blocks/cobblestone')
 
 # === Inventar erstellen ===
 inventory = create_inventory()
+add_new_block_type('test')
 
 # Beispiel: Neuen Block-Typ hinzufügen (optional)
 # add_new_block_type('custom_block')
 
 # === Welt generieren ===
-world = World()
-world.generate_area(radius=2)
+for x in range(100):
+    for z in range(100):
+        BlockRegistry.create('grass', position=(x, -10, z))
 
 # === Beispielblöcke ===
 BlockRegistry.create('stone', position=(5, 1, 5))
