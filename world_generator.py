@@ -73,22 +73,22 @@ class FastWorldGenerator:
     
     # Biom Definitionen: [surface, subsurface, tree_chance, base_height, height_variation]
     BIOMES = {
-        'plains': ['grass', 'dirt', 0.03, 8, 3],
-        'desert': ['sand', 'sand', 0.001, 6, 2], 
-        'hills': ['grass', 'stone', 0.02, 12, 6],
-        'mountains': ['stone', 'stone', 0.005, 20, 10]
+        'plains': ['grass', 'dirt', 0.01, 5, 2],  # Reduzierte Werte für bessere Performance
+        'desert': ['sand', 'sand', 0.001, 4, 1], 
+        'hills': ['grass', 'stone', 0.005, 8, 3],
+        'mountains': ['stone', 'stone', 0.001, 12, 4]
     }
     
-    def __init__(self, seed=None, chunk_size=16):
+    def __init__(self, seed=None, chunk_size=8):  # Kleinere Chunks für bessere Performance
         self.seed = seed or random.randint(0, 999999)
         self.chunk_size = chunk_size
         self.noise = SimpleNoise(self.seed)
         
         # Chunk Cache
         self.chunk_cache = {}
-        self.max_cached_chunks = 50  # Begrenzt Memory Usage
+        self.max_cached_chunks = 25  # Reduziert für weniger Memory Usage
         
-        print(f"World Generator initialized - Seed: {self.seed}")
+        print(f"World Generator initialized - Seed: {self.seed}, Chunk Size: {self.chunk_size}")
     
     def get_biome(self, x, z):
         """Bestimmt Biom basierend auf Koordinaten"""
@@ -111,12 +111,8 @@ class FastWorldGenerator:
         base_height = biome_data[3]
         height_var = biome_data[4]
         
-        # Kombiniere mehrere Noise Layers für natürlichere Terrain
-        height_noise = (
-            self.noise.noise2d(x, z, 0.01) * 0.6 +
-            self.noise.noise2d(x, z, 0.03) * 0.3 +
-            self.noise.noise2d(x, z, 0.06) * 0.1
-        )
+        # Einfachere Noise für bessere Performance
+        height_noise = self.noise.noise2d(x, z, 0.02)
         
         return int(base_height + height_noise * height_var)
     
@@ -135,13 +131,14 @@ class FastWorldGenerator:
         world_x_start = chunk_x * self.chunk_size
         world_z_start = chunk_z * self.chunk_size
         
-        # Generiere Blöcke für jeden Position im Chunk
+        # Batch-Generierung für bessere Performance
         for local_x in range(self.chunk_size):
             for local_z in range(self.chunk_size):
                 world_x = world_x_start + local_x
                 world_z = world_z_start + local_z
                 
-                blocks.extend(self._generate_column(world_x, world_z))
+                column_blocks = self._generate_column(world_x, world_z)
+                blocks.extend(column_blocks)
         
         # Cache Management
         if len(self.chunk_cache) >= self.max_cached_chunks:
@@ -167,78 +164,89 @@ class FastWorldGenerator:
         subsurface_block = biome_data[1]
         tree_chance = biome_data[2]
         
-        # Bedrock Layer (ganz unten)
-        for y in range(-10, -7):
-            blocks.append(self._create_block('stone', x, y, z))
+        # Reduzierte Tiefe für bessere Performance
+        # Bedrock Layer
+        for y in range(-5, -3):
+            block = self._create_block('stone', x, y, z)
+            if block:
+                blocks.append(block)
         
-        # Underground
-        for y in range(-7, height - 1):
-            # Einfache Höhlen (sehr basic)
-            if self._is_cave(x, y, z):
+        # Underground - nur bis zu einer bestimmten Tiefe
+        for y in range(-3, max(0, height - 1)):
+            # Einfachere Höhlen Logik
+            if y < 0 and self._is_simple_cave(x, y, z):
                 continue
-            blocks.append(self._create_block(subsurface_block, x, y, z))
+            block = self._create_block(subsurface_block, x, y, z)
+            if block:
+                blocks.append(block)
         
         # Surface
-        blocks.append(self._create_block(surface_block, x, height - 1, z))
+        if height > 0:
+            block = self._create_block(surface_block, x, height - 1, z)
+            if block:
+                blocks.append(block)
         
-        # Wasser (wenn unter Sea Level)
-        sea_level = 5
+        # Wasser (vereinfacht)
+        sea_level = 3
         if height < sea_level:
-            for y in range(height, sea_level):
-                blocks.append(self._create_block('water', x, y, z))
+            for y in range(max(0, height), sea_level):
+                block = self._create_block('water', x, y, z)
+                if block:
+                    blocks.append(block)
         
-        # Bäume
+        # Weniger Bäume für bessere Performance
         if random.random() < tree_chance and height >= sea_level:
             tree_blocks = self._generate_simple_tree(x, height, z)
             blocks.extend(tree_blocks)
         
         return blocks
     
-    def _is_cave(self, x, y, z):
-        """Einfache Höhlen Generation"""
-        if y > 0 or y < -15:  # Nur in bestimmten Höhen
+    def _is_simple_cave(self, x, y, z):
+        """Sehr einfache Höhlen Generation"""
+        if y >= 0 or y < -8:
             return False
         
-        cave_noise = (
-            self.noise.noise2d(x, y, 0.02) +
-            self.noise.noise2d(y, z, 0.02) +
-            self.noise.noise2d(x, z, 0.02)
-        ) / 3
-        
-        return cave_noise > 0.6
+        cave_noise = self.noise.noise2d(x + y, z + y, 0.05)
+        return cave_noise > 0.7
     
     def _generate_simple_tree(self, x, base_y, z):
         """Generiert einen einfachen Baum"""
         tree_blocks = []
-        tree_height = random.randint(3, 5)
+        tree_height = random.randint(2, 4)  # Kleinere Bäume
         
         # Stamm
         for y in range(base_y, base_y + tree_height):
-            tree_blocks.append(self._create_block('wood', x, y, z))
+            block = self._create_block('wood', x, y, z)
+            if block:
+                tree_blocks.append(block)
         
-        # Blätter (einfache Form)
+        # Einfache Blätter
         crown_y = base_y + tree_height - 1
-        for dx in range(-1, 2):
-            for dz in range(-1, 2):
-                for dy in range(0, 2):
-                    if dx == 0 and dz == 0 and dy == 0:  # Nicht auf Stamm
-                        continue
-                    if random.random() < 0.7:  # Nicht alle Positionen füllen
-                        tree_blocks.append(self._create_block('leaves', x + dx, crown_y + dy, z + dz))
+        for dx in [-1, 0, 1]:
+            for dz in [-1, 0, 1]:
+                if dx == 0 and dz == 0:
+                    continue
+                if random.random() < 0.6:
+                    block = self._create_block('leaves', x + dx, crown_y, z + dz)
+                    if block:
+                        tree_blocks.append(block)
         
         return tree_blocks
     
     def _create_block(self, block_type, x, y, z):
-        """Erstellt einen Block"""
-        if block_type in BlockRegistry.registry:
-            return BlockRegistry.create(block_type, position=(x, y, z))
+        """Erstellt einen Block mit Error Handling"""
+        try:
+            if block_type in BlockRegistry.registry:
+                return BlockRegistry.create(block_type, position=(x, y, z))
+        except Exception as e:
+            print(f"Warning: Could not create block {block_type} at ({x}, {y}, {z}): {e}")
         return None
 
 
 class SimpleChunkManager:
     """Einfacher Chunk Manager ohne komplexe Threading"""
     
-    def __init__(self, world_generator, render_distance=3):
+    def __init__(self, world_generator, render_distance=2):  # Reduzierte Render Distance
         self.world_gen = world_generator
         self.render_distance = render_distance
         self.loaded_chunks = {}
@@ -272,7 +280,7 @@ class SimpleChunkManager:
         
         # Entlade weit entfernte Chunks
         chunks_to_unload = []
-        for chunk_coords in self.loaded_chunks:
+        for chunk_coords in list(self.loaded_chunks.keys()):  # Copy keys to avoid modification during iteration
             if chunk_coords not in chunks_needed:
                 chunks_to_unload.append(chunk_coords)
         
@@ -280,30 +288,43 @@ class SimpleChunkManager:
             self._unload_chunk(chunk_coords)
             chunks_unloaded += 1
         
-        if chunks_loaded > 0 or chunks_unloaded > 0:
-            print(f"Chunks: +{chunks_loaded} -{chunks_unloaded} (Total: {len(self.loaded_chunks)})")
-        
         return chunks_loaded, chunks_unloaded
     
     def _load_chunk(self, chunk_x, chunk_z):
         """Lädt einen einzelnen Chunk"""
         chunk_key = (chunk_x, chunk_z)
-        blocks = self.world_gen.generate_chunk(chunk_x, chunk_z)
         
-        self.loaded_chunks[chunk_key] = True
-        self.chunk_blocks[chunk_key] = blocks
+        try:
+            blocks = self.world_gen.generate_chunk(chunk_x, chunk_z)
+            # Filtere None-Blöcke
+            valid_blocks = [block for block in blocks if block is not None]
+            
+            self.loaded_chunks[chunk_key] = True
+            self.chunk_blocks[chunk_key] = valid_blocks
+            
+        except Exception as e:
+            print(f"Error loading chunk ({chunk_x}, {chunk_z}): {e}")
+            self.loaded_chunks[chunk_key] = True
+            self.chunk_blocks[chunk_key] = []
     
     def _unload_chunk(self, chunk_coords):
         """Entlädt einen Chunk"""
-        if chunk_coords in self.chunk_blocks:
-            # Zerstöre alle Blöcke
-            for block in self.chunk_blocks[chunk_coords]:
-                if block and hasattr(block, 'enabled'):
-                    destroy(block)
-            del self.chunk_blocks[chunk_coords]
-        
-        if chunk_coords in self.loaded_chunks:
-            del self.loaded_chunks[chunk_coords]
+        try:
+            if chunk_coords in self.chunk_blocks:
+                # Zerstöre alle Blöcke
+                for block in self.chunk_blocks[chunk_coords]:
+                    if block and hasattr(block, 'enabled'):
+                        try:
+                            destroy(block)
+                        except:
+                            pass  # Ignore destruction errors
+                del self.chunk_blocks[chunk_coords]
+            
+            if chunk_coords in self.loaded_chunks:
+                del self.loaded_chunks[chunk_coords]
+                
+        except Exception as e:
+            print(f"Error unloading chunk {chunk_coords}: {e}")
     
     def generate_spawn_area(self, spawn_x=0, spawn_z=0, radius=1):
         """Generiert Spawn Bereich"""
@@ -311,13 +332,19 @@ class SimpleChunkManager:
         
         print(f"Generating spawn area around chunk ({spawn_chunk_x}, {spawn_chunk_z})")
         
+        chunks_generated = 0
         for dx in range(-radius, radius + 1):
             for dz in range(-radius, radius + 1):
                 chunk_x = spawn_chunk_x + dx
                 chunk_z = spawn_chunk_z + dz
                 self._load_chunk(chunk_x, chunk_z)
+                chunks_generated += 1
+                
+                # Progress Update
+                if chunks_generated % 2 == 0:
+                    print(f"Generating spawn chunks: {chunks_generated}/{(radius * 2 + 1) ** 2}")
         
-        print(f"Spawn area generated: {(radius * 2 + 1) ** 2} chunks")
+        print(f"Spawn area generated: {chunks_generated} chunks loaded")
     
     def get_height_at(self, x, z):
         """Gibt Höhe an Position zurück"""
@@ -335,7 +362,7 @@ class SimpleChunkManager:
 
 
 # Factory Functions für einfache Verwendung
-def create_world_generator(seed=None, chunk_size=16, render_distance=3):
+def create_world_generator(seed=None, chunk_size=8, render_distance=2):
     """Erstellt einen optimierten World Generator"""
     world_gen = FastWorldGenerator(seed, chunk_size)
     chunk_manager = SimpleChunkManager(world_gen, render_distance)
@@ -343,10 +370,9 @@ def create_world_generator(seed=None, chunk_size=16, render_distance=3):
 
 def update_world_around_player(chunk_manager, player):
     """Updated die Welt um den Spieler"""
-    if hasattr(player, 'position'):
-        return chunk_manager.update_around_player(player.x, player.z)
-    return 0, 0
-        if loaded > 0 or unloaded > 0:
-            print(f"[WorldGen] Chunks: +{loaded} gestartet, -{unloaded} entladen")
-        return loaded, unloaded
+    try:
+        if hasattr(player, 'position'):
+            return chunk_manager.update_around_player(player.x, player.z)
+    except Exception as e:
+        print(f"Error updating world around player: {e}")
     return 0, 0
