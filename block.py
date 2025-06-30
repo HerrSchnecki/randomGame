@@ -1,6 +1,7 @@
 from ursina import *
 from ursina import color as ursina_color
 import os
+from collections import defaultdict
 
 class BlockRegistry:
     registry = {}
@@ -154,9 +155,8 @@ class BlockRegistry:
             cls.register(name, texture, model='cube', scale=scale, color=color, walkthrough=walkthrough)
 
 
-class Block(Button):
+class Block(Entity):  # Geändert von Button zu Entity für bessere Performance
     _default_color = None
-    _collision_enabled = True
     
     def __init__(self, position=(0, 0, 0), texture='white_cube', model='cube', scale=1, color=None, walkthrough=False):
         if color is None:
@@ -180,19 +180,16 @@ class Block(Button):
         
         self.walkthrough = walkthrough
         
-        self._setup_collision(walkthrough)
-
-    def _setup_collision(self, walkthrough):
-        """Optimierte Kollisions-Setup"""
-        if walkthrough:
-            self.collider = None
-            self.collision = True
-        else:
+        # Optimierte Kollision - nur bei Bedarf
+        if not walkthrough:
             self.collider = 'box'
-            self.collision = True
+        
+        # Mouse picking für Interaktion (effizienter als Button)
+        self.mouse_filter = True
 
     def input(self, key):
-        if not self.hovered:
+        """Vereinfachte Input-Behandlung"""
+        if not mouse.hovered_entity == self:
             return
             
         if key == 'right mouse down':
@@ -209,139 +206,234 @@ class Block(Button):
                 new_position = self.position + mouse.normal
                 new_block = BlockRegistry.create(current_block, position=new_position)
                 if new_block:
-                    print(f"Block '{current_block}' platziert an Position {new_position}")
+                    # Füge Block zum Chunk hinzu für bessere Verwaltung
+                    chunk_manager.add_block_to_chunk(new_block, new_position)
             else:
                 print("Kein Block im Inventar ausgewählt!")
         except ImportError:
-            print("Inventarsystem nicht verfügbar, verwende Standard-Block")
+            # Fallback ohne Inventarsystem
             current_block = 'grass'
-            BlockRegistry.create(current_block, position=self.position + mouse.normal)
+            new_block = BlockRegistry.create(current_block, position=self.position + mouse.normal)
+            if new_block:
+                chunk_manager.add_block_to_chunk(new_block, self.position + mouse.normal)
 
     def _handle_break_block(self):
         """Optimierte Block-Zerstörung"""
-        block_type = "walkthrough" if self.walkthrough else "solid"
-        print(f"{block_type.capitalize()}-Block abgebaut an Position {self.position}")
+        # Entferne Block aus Chunk-Management
+        chunk_manager.remove_block_from_chunk(self)
         destroy(self)
 
     def set_walkthrough(self, walkthrough):
         """Ändert die Walkthrough-Eigenschaft zur Laufzeit"""
         self.walkthrough = walkthrough
-        self._setup_collision(walkthrough)
+        if walkthrough:
+            self.collider = None
+        else:
+            self.collider = 'box'
 
 
-class ChunkManager:
-    """Verwaltet Chunks für bessere Performance bei großen Welten"""
-    def __init__(self, chunk_size=16):
+class OptimizedChunkManager:
+    """Hochoptimierter Chunk-Manager für bessere Performance"""
+    def __init__(self, chunk_size=16, max_loaded_chunks=25):
         self.chunk_size = chunk_size
+        self.max_loaded_chunks = max_loaded_chunks  # Limitiere geladene Chunks
         self.chunks = {}
         self.loaded_chunks = set()
+        self.chunk_blocks = defaultdict(list)  # Optimierte Block-Verwaltung
+        self.last_cleanup = 0
+        self.cleanup_interval = 5.0  # Cleanup alle 5 Sekunden
     
     def get_chunk_coords(self, world_pos):
         """Berechnet Chunk-Koordinaten aus Welt-Position"""
-        return (
-            int(world_pos[0] // self.chunk_size),
-            int(world_pos[2] // self.chunk_size)
-        )
+        if isinstance(world_pos, (tuple, list)) and len(world_pos) >= 3:
+            return (
+                int(world_pos[0] // self.chunk_size),
+                int(world_pos[2] // self.chunk_size)
+            )
+        else:
+            # Fallback für einzelne Koordinaten
+            return (
+                int(world_pos // self.chunk_size) if isinstance(world_pos, (int, float)) else 0,
+                0
+            )
     
     def load_chunk(self, chunk_x, chunk_z):
-        """Lädt einen Chunk"""
+        """Lädt einen Chunk mit Performance-Optimierung"""
         chunk_key = (chunk_x, chunk_z)
         if chunk_key not in self.loaded_chunks:
+            # Prüfe Chunk-Limit
+            if len(self.loaded_chunks) >= self.max_loaded_chunks:
+                self._cleanup_distant_chunks(chunk_x, chunk_z)
+            
             self.chunks[chunk_key] = []
             self.loaded_chunks.add(chunk_key)
             return True
         return False
     
+    def _cleanup_distant_chunks(self, center_x, center_z):
+        """Entlädt weit entfernte Chunks"""
+        chunks_to_unload = []
+        for chunk_x, chunk_z in self.loaded_chunks:
+            distance = abs(chunk_x - center_x) + abs(chunk_z - center_z)
+            if distance > 3:  # Entlade Chunks die weiter als 3 Chunks entfernt sind
+                chunks_to_unload.append((chunk_x, chunk_z))
+        
+        # Entlade die Hälfte der entfernten Chunks
+        for chunk_key in chunks_to_unload[:len(chunks_to_unload)//2]:
+            self.unload_chunk(chunk_key[0], chunk_key[1])
+    
     def unload_chunk(self, chunk_x, chunk_z):
-        """Entlädt einen Chunk"""
+        """Entlädt einen Chunk mit Batch-Destruction"""
         chunk_key = (chunk_x, chunk_z)
         if chunk_key in self.loaded_chunks:
-            if chunk_key in self.chunks:
-                for block in self.chunks[chunk_key]:
-                    if block:
+            if chunk_key in self.chunk_blocks:
+                # Batch-Destruction für bessere Performance
+                blocks_to_destroy = self.chunk_blocks[chunk_key]
+                for block in blocks_to_destroy:
+                    if block and hasattr(block, 'enabled'):
                         destroy(block)
+                del self.chunk_blocks[chunk_key]
+            
+            if chunk_key in self.chunks:
                 del self.chunks[chunk_key]
             self.loaded_chunks.remove(chunk_key)
     
     def add_block_to_chunk(self, block, world_pos):
-        """Fügt Block zum entsprechenden Chunk hinzu"""
+        """Fügt Block zum entsprechenden Chunk hinzu - Optimiert"""
         chunk_coords = self.get_chunk_coords(world_pos)
-        if chunk_coords not in self.chunks:
+        if chunk_coords not in self.loaded_chunks:
             self.load_chunk(*chunk_coords)
-        self.chunks[chunk_coords].append(block)
+        
+        self.chunk_blocks[chunk_coords].append(block)
+        if chunk_coords in self.chunks:
+            self.chunks[chunk_coords].append(block)
+    
+    def remove_block_from_chunk(self, block):
+        """Entfernt Block aus Chunk-Management"""
+        # Finde den Chunk des Blocks
+        block_pos = (block.x, block.y, block.z)
+        chunk_coords = self.get_chunk_coords(block_pos)
+        
+        if chunk_coords in self.chunk_blocks:
+            try:
+                self.chunk_blocks[chunk_coords].remove(block)
+            except ValueError:
+                pass  # Block nicht in Liste
+        
+        if chunk_coords in self.chunks:
+            try:
+                self.chunks[chunk_coords].remove(block)
+            except ValueError:
+                pass  # Block nicht in Liste
+    
+    def get_nearby_chunks(self, center_x, center_z, radius=2):
+        """Gibt nahegelegene Chunks zurück"""
+        nearby_chunks = []
+        for x in range(center_x - radius, center_x + radius + 1):
+            for z in range(center_z - radius, center_z + radius + 1):
+                if (x, z) in self.loaded_chunks:
+                    nearby_chunks.append((x, z))
+        return nearby_chunks
+    
+    def periodic_cleanup(self):
+        """Periodische Bereinigung für Performance"""
+        import time
+        current_time = time.time()
+        if current_time - self.last_cleanup > self.cleanup_interval:
+            # Entferne None-Referenzen aus Chunk-Listen
+            for chunk_key in list(self.chunk_blocks.keys()):
+                self.chunk_blocks[chunk_key] = [
+                    block for block in self.chunk_blocks[chunk_key] 
+                    if block and hasattr(block, 'enabled')
+                ]
+                if not self.chunk_blocks[chunk_key]:
+                    del self.chunk_blocks[chunk_key]
+            
+            self.last_cleanup = current_time
 
-chunk_manager = ChunkManager()
+
+# Globaler optimierter Chunk-Manager
+chunk_manager = OptimizedChunkManager(chunk_size=16, max_loaded_chunks=20)
 
 def register_default_blocks():
-    """Registriert Standard-Blöcke mit verschiedenen Models"""
+    """Registriert Standard-Blöcke - Reduziert für bessere Performance"""
     
+    # Basis-Blöcke
     BlockRegistry.register('grass', 'grass', model='cube')
     BlockRegistry.register('stone', 'brick', model='cube')
     BlockRegistry.register('wood', 'wood', model='cube')
+    BlockRegistry.register('dirt', 'wood', model='cube', color=ursina_color.brown)  # Fallback texture
+    BlockRegistry.register('sand', 'white_cube', model='cube', color=ursina_color.yellow)
+    BlockRegistry.register('cobblestone', 'brick', model='cube', color=ursina_color.gray)
     
+    # Spezielle Blöcke
     BlockRegistry.register('glass', 'white_cube', model='cube', color=ursina_color.clear, walkthrough=True)
-    BlockRegistry.register('air_block', 'white_cube', model='cube', color=ursina_color.rgba(255,255,255,0.1), walkthrough=True)
     BlockRegistry.register('water', 'white_cube', model='cube', color=ursina_color.blue.tint(-.3), walkthrough=True)
+    BlockRegistry.register('leaves', 'white_cube', model='cube', color=ursina_color.green, walkthrough=True)
     
-    BlockRegistry.register('sphere_block', 'white_cube', model='sphere', color=ursina_color.blue)
-    BlockRegistry.register('cylinder_block', 'brick', model='cylinder', color=ursina_color.red)
-    BlockRegistry.register('plane_block', 'grass', model='plane', scale=0.1, color=ursina_color.green, walkthrough=True)
-    
-    BlockRegistry.register('big_cube', 'wood', model='cube', scale=2, color=ursina_color.brown)
-    BlockRegistry.register('small_sphere', 'white_cube', model='sphere', scale=0.5, color=ursina_color.yellow, walkthrough=True)
-    
-    print(f"[BlockRegistry] {len(BlockRegistry.registry)} Standard-Blöcke registriert")
-
-def register_custom_model_block(name, texture, model_url, scale=1, color=None, walkthrough=False):
-    """
-    Vereinfachte Funktion zum Registrieren von Custom Model Blöcken
-    """
-    BlockRegistry.register(name, texture, model='cube', scale=scale, color=color, 
-                          walkthrough=walkthrough, model_url=model_url)
-
-def create_walkthrough_area(start_pos, end_pos, block_type='air_block'):
-    """
-    Erstellt einen Bereich mit walkthrough-Blöcken (optimiert für große Bereiche)
-    """
-    blocks = []
-    total_blocks = (end_pos[0] - start_pos[0] + 1) * (end_pos[1] - start_pos[1] + 1) * (end_pos[2] - start_pos[2] + 1)
-    
-    if total_blocks > 1000:
-        print(f"[Performance] Erstelle {total_blocks} Blöcke - das kann einen Moment dauern...")
-    
-    for x in range(int(start_pos[0]), int(end_pos[0]) + 1):
-        for y in range(int(start_pos[1]), int(end_pos[1]) + 1):
-            for z in range(int(start_pos[2]), int(end_pos[2]) + 1):
-                block = BlockRegistry.create(block_type, position=(x, y, z))
-                if block:
-                    blocks.append(block)
-                    chunk_manager.add_block_to_chunk(block, (x, y, z))
-    
-    print(f"[Performance] {len(blocks)} Blöcke erstellt")
-    return blocks
+    print(f"[BlockRegistry] {len(BlockRegistry.registry)} Blöcke registriert")
 
 def create_optimized_world(width, height, depth, ground_level=-10, block_type='grass'):
     """
-    Optimierte Welt-Generierung mit Chunk-System
+    Hochoptimierte Welt-Generierung mit Batch-Creation
     """
     print(f"[Performance] Generiere optimierte Welt: {width}x{height}x{depth}")
     
-    blocks_created = 0
+    # Batch-Erstellung für bessere Performance
+    blocks_to_create = []
     for x in range(width):
         for z in range(depth):
             for y in range(ground_level, ground_level + height):
-                block = BlockRegistry.create(block_type, position=(x, y, z))
-                if block:
-                    chunk_manager.add_block_to_chunk(block, (x, y, z))
-                    blocks_created += 1
+                blocks_to_create.append((x, y, z))
+    
+    # Erstelle Blöcke in Batches
+    batch_size = 100
+    blocks_created = 0
+    
+    for i in range(0, len(blocks_to_create), batch_size):
+        batch = blocks_to_create[i:i+batch_size]
+        for x, y, z in batch:
+            block = BlockRegistry.create(block_type, position=(x, y, z))
+            if block:
+                chunk_manager.add_block_to_chunk(block, (x, y, z))
+                blocks_created += 1
         
-        if x % 10 == 0:
-            print(f"[Performance] Fortschritt: {x}/{width} Spalten erstellt ({blocks_created} Blöcke)")
+        # Progress-Update
+        if i % (batch_size * 10) == 0:
+            progress = (i / len(blocks_to_create)) * 100
+            print(f"[Performance] Fortschritt: {progress:.1f}% ({blocks_created} Blöcke)")
     
     print(f"[Performance] Welt-Generierung abgeschlossen: {blocks_created} Blöcke erstellt")
 
+def create_performance_optimized_area(start_pos, end_pos, block_type='grass'):
+    """
+    Erstellt einen Bereich mit maximaler Performance-Optimierung
+    """
+    blocks = []
+    positions = []
+    
+    # Sammle alle Positionen
+    for x in range(int(start_pos[0]), int(end_pos[0]) + 1):
+        for y in range(int(start_pos[1]), int(end_pos[1]) + 1):
+            for z in range(int(start_pos[2]), int(end_pos[2]) + 1):
+                positions.append((x, y, z))
+    
+    # Batch-Erstellung
+    batch_size = 50
+    for i in range(0, len(positions), batch_size):
+        batch = positions[i:i+batch_size]
+        for pos in batch:
+            block = BlockRegistry.create(block_type, position=pos)
+            if block:
+                blocks.append(block)
+                chunk_manager.add_block_to_chunk(block, pos)
+    
+    return blocks
+
+# Registriere Standard-Blöcke beim Import
 register_default_blocks()
 
+# Legacy-Funktionen für Kompatibilität
 current_block = 'grass'
 
 def get_block_texture(block_name):
@@ -356,10 +448,17 @@ def get_registered_blocks():
     return legacy_dict
 
 def get_performance_stats():
-    """Gibt Performance-Statistiken zurück"""
+    """Gibt erweiterte Performance-Statistiken zurück"""
     return {
         'loaded_chunks': len(chunk_manager.loaded_chunks),
         'cached_textures': len(BlockRegistry._texture_cache),
         'cached_models': len(BlockRegistry._model_cache),
-        'registered_blocks': len(BlockRegistry.registry)
+        'registered_blocks': len(BlockRegistry.registry),
+        'total_blocks_in_chunks': sum(len(blocks) for blocks in chunk_manager.chunk_blocks.values()),
+        'max_loaded_chunks': chunk_manager.max_loaded_chunks
     }
+
+# Periodische Cleanup-Funktion
+def update_performance():
+    """Sollte regelmäßig aufgerufen werden für optimale Performance"""
+    chunk_manager.periodic_cleanup()
