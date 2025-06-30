@@ -4,6 +4,7 @@ import time
 from ursina import *
 from block import BlockRegistry, chunk_manager
 
+
 class NoiseGenerator:
     """Einfacher Perlin-Noise-ähnlicher Generator für Terrain"""
     
@@ -14,33 +15,57 @@ class NoiseGenerator:
         self.persistence = 0.5
         self.scale = 0.02
         
-    def noise(self, x, z):
-        """Generiert Noise-Wert für gegebene Koordinaten"""
+    def noise(self, x, z, y=None):
+        """Generiert Noise-Wert für gegebene Koordinaten (2D oder 3D)"""
+        if y is None:
+            # 2D Noise für Terrain
+            return self._noise_2d(x, z)
+        else:
+            # 3D Noise für Höhlen
+            return self._noise_3d(x, y, z)
+    
+    def _noise_2d(self, x, z):
+        """2D Noise für Terrain-Generation"""
         value = 0
         amplitude = 1
         frequency = self.scale
         max_value = 0
         
         for i in range(self.octaves):
-            value += self._interpolated_noise(x * frequency, z * frequency) * amplitude
+            value += self._interpolated_noise_2d(x * frequency, z * frequency) * amplitude
             max_value += amplitude
             amplitude *= self.persistence
             frequency *= 2
             
         return value / max_value
     
-    def _interpolated_noise(self, x, z):
-        """Interpolierter Noise zwischen ganzzahligen Koordinaten"""
+    def _noise_3d(self, x, y, z):
+        """3D Noise für Höhlen-Generation"""
+        value = 0
+        amplitude = 1
+        frequency = self.scale
+        max_value = 0
+        
+        for i in range(self.octaves):
+            value += self._interpolated_noise_3d(x * frequency, y * frequency, z * frequency) * amplitude
+            max_value += amplitude
+            amplitude *= self.persistence
+            frequency *= 2
+            
+        return value / max_value
+    
+    def _interpolated_noise_2d(self, x, z):
+        """Interpolierter 2D Noise zwischen ganzzahligen Koordinaten"""
         int_x = int(x)
         int_z = int(z)
         frac_x = x - int_x
         frac_z = z - int_z
         
         # Eckwerte holen
-        a = self._smooth_noise(int_x, int_z)
-        b = self._smooth_noise(int_x + 1, int_z)
-        c = self._smooth_noise(int_x, int_z + 1)
-        d = self._smooth_noise(int_x + 1, int_z + 1)
+        a = self._smooth_noise_2d(int_x, int_z)
+        b = self._smooth_noise_2d(int_x + 1, int_z)
+        c = self._smooth_noise_2d(int_x, int_z + 1)
+        d = self._smooth_noise_2d(int_x + 1, int_z + 1)
         
         # Interpolieren
         i1 = self._interpolate(a, b, frac_x)
@@ -48,19 +73,57 @@ class NoiseGenerator:
         
         return self._interpolate(i1, i2, frac_z)
     
-    def _smooth_noise(self, x, z):
-        """Geglätteter Noise-Wert"""
-        corners = (self._noise(x-1, z-1) + self._noise(x+1, z-1) + 
-                  self._noise(x-1, z+1) + self._noise(x+1, z+1)) / 16
-        sides = (self._noise(x-1, z) + self._noise(x+1, z) + 
-                self._noise(x, z-1) + self._noise(x, z+1)) / 8
-        center = self._noise(x, z) / 4
+    def _interpolated_noise_3d(self, x, y, z):
+        """Interpolierter 3D Noise zwischen ganzzahligen Koordinaten"""
+        int_x = int(x)
+        int_y = int(y)
+        int_z = int(z)
+        frac_x = x - int_x
+        frac_y = y - int_y
+        frac_z = z - int_z
+        
+        # 8 Eckpunkte eines Würfels
+        n000 = self._noise_3d_raw(int_x, int_y, int_z)
+        n001 = self._noise_3d_raw(int_x, int_y, int_z + 1)
+        n010 = self._noise_3d_raw(int_x, int_y + 1, int_z)
+        n011 = self._noise_3d_raw(int_x, int_y + 1, int_z + 1)
+        n100 = self._noise_3d_raw(int_x + 1, int_y, int_z)
+        n101 = self._noise_3d_raw(int_x + 1, int_y, int_z + 1)
+        n110 = self._noise_3d_raw(int_x + 1, int_y + 1, int_z)
+        n111 = self._noise_3d_raw(int_x + 1, int_y + 1, int_z + 1)
+        
+        # Trilineare Interpolation
+        # Zuerst in X-Richtung
+        n00 = self._interpolate(n000, n100, frac_x)
+        n01 = self._interpolate(n001, n101, frac_x)
+        n10 = self._interpolate(n010, n110, frac_x)
+        n11 = self._interpolate(n011, n111, frac_x)
+        
+        # Dann in Z-Richtung
+        n0 = self._interpolate(n00, n01, frac_z)
+        n1 = self._interpolate(n10, n11, frac_z)
+        
+        # Schließlich in Y-Richtung
+        return self._interpolate(n0, n1, frac_y)
+    
+    def _smooth_noise_2d(self, x, z):
+        """Geglätteter 2D Noise-Wert"""
+        corners = (self._noise_2d_raw(x-1, z-1) + self._noise_2d_raw(x+1, z-1) + 
+                  self._noise_2d_raw(x-1, z+1) + self._noise_2d_raw(x+1, z+1)) / 16
+        sides = (self._noise_2d_raw(x-1, z) + self._noise_2d_raw(x+1, z) + 
+                self._noise_2d_raw(x, z-1) + self._noise_2d_raw(x, z+1)) / 8
+        center = self._noise_2d_raw(x, z) / 4
         
         return corners + sides + center
     
-    def _noise(self, x, z):
-        """Basis-Noise-Funktion"""
+    def _noise_2d_raw(self, x, z):
+        """Basis 2D Noise-Funktion"""
         random.seed(x * 374761393 + z * 668265263 + self.seed)
+        return (random.random() - 0.5) * 2
+    
+    def _noise_3d_raw(self, x, y, z):
+        """Basis 3D Noise-Funktion"""
+        random.seed(x * 374761393 + y * 982451653 + z * 668265263 + self.seed)
         return (random.random() - 0.5) * 2
     
     def _interpolate(self, a, b, x):
@@ -294,7 +357,7 @@ class ChunkGenerator:
 class WorldGenerator:
     """Haupt-World-Generator mit Chunk-Management"""
     
-    def __init__(self, seed=None, chunk_size=16, render_distance=3):
+    def __init__(self, seed=None, chunk_size=16, render_distance=1):
         self.seed = seed or random.randint(0, 999999)
         self.chunk_size = chunk_size
         self.render_distance = render_distance
